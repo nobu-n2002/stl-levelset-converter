@@ -28,7 +28,7 @@ This project provides a C++ code for converting STL files into level set distrib
    Run the compiled executable:
 
    ```sh
-   ./build/STLToPorosity
+   ./build/src/STLToPorosity
    ```
 
    The output CSV file containing cell dimensions and scalar values will be generated. If the `outputVtk` option is set to true, an additional VTK file will be created.
