@@ -1,0 +1,27 @@
+# Path to the STL file
+stlFilePath=stl_files/sphere.stl
+
+# Path to the output CSV file
+outputCsvFileName=porosity.csv
+
+# Path to the output VTK file
+outputVtkFilePath=point_data.vti
+
+# Factor to expand the bounds of the input STL file
+boundsFactor=1.5 1.5 1.5 1.5 1.5 1.5
+
+# Grid resolution
+grid=64
+
+# Axis along which the grid is aligned (0 for X, 1 for Y, 2 for Z)
+axis=1
+
+# Thickness parameter (Delta/dx) used in calculations
+thickness=1.5
+
+# Whether to output VTK file (true or false)
+outputVtk=true
+
+# Number of threads to use for parallel processing
+numThreads=8
+
