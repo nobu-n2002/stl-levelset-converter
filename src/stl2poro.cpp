@@ -35,8 +35,6 @@ SOFTWARE.
 #include <vtkXMLImageDataWriter.h>
 #include <omp.h>
 
-#include <vtkMultiThreader.h>
-
 // Function to read settings from config file
 bool readConfigFile(const std::string& configFilePath, std::string& stlFilePath, std::string& outputCsvFileName,
                     std::string& outputVtkFilePath, std::vector<double>& boundsFactor, int& grid, int& axis,
@@ -142,90 +140,64 @@ vtkSmartPointer<vtkImageData> processSTLFile(vtkSmartPointer<vtkPolyData> polyDa
 }
 
 /**
- * @brief Calculate the porosity using Signed Distance Fields.
+ * @brief Calculate the Signed Distance Fields.
  * 
  * @param polyData The input polydata representing the geometry.
  * @param imageData The input image data representing the grid.
- * @param thickness The thickness parameter for normalization.
+ * @return The output array storing the Signed Distance Fields.
  */
-vtkSmartPointer<vtkDoubleArray> computePorosity(vtkSmartPointer<vtkPolyData> polyData, vtkSmartPointer<vtkImageData> imageData, double thickness) {
+vtkSmartPointer<vtkDoubleArray> computeSDF(vtkSmartPointer<vtkPolyData> polyData, vtkSmartPointer<vtkImageData> imageData) {
     vtkSmartPointer<vtkImplicitPolyDataDistance> sdf = vtkSmartPointer<vtkImplicitPolyDataDistance>::New();
     sdf->SetInput(polyData);
 
-    vtkSmartPointer<vtkDoubleArray> porosity = vtkSmartPointer<vtkDoubleArray>::New();
-    porosity->SetName("porosity");
+    vtkSmartPointer<vtkDoubleArray> sdfOutput = vtkSmartPointer<vtkDoubleArray>::New();
+    sdfOutput->SetName("SDF");
 
     int* dims = imageData->GetDimensions();
     double* spacing = imageData->GetSpacing();
     double* origin = imageData->GetOrigin();
 
-    // for single thread
     {
         for (int k = 0; k < dims[2]; ++k) {
             for (int j = 0; j < dims[1]; ++j) {
                 for (int i = 0; i < dims[0]; ++i) {
-                    {
                     double point[3];
                     point[0] = origin[0] + i * spacing[0];
                     point[1] = origin[1] + j * spacing[1];
                     point[2] = origin[2] + k * spacing[2];
                     // Signed Distance Fields
+                    {
                     double distance = sdf->FunctionValue(point);
-                    // Normalize distance by thickness and spacing
-                    double normalizedDistance = distance / (thickness * spacing[0]);
-                    // Apply tanh function to get wall boundary distribution in range [-1, 1]
-                    double wallBoundaryFunction = 0.5 * std::tanh(normalizedDistance) + 0.5;
-                    // Store the value in the thread-specific buffer
-                    porosity->InsertNextValue(wallBoundaryFunction);
+                    sdfOutput->InsertNextValue(distance);
                     }
                 }
             }
         }
     }
 
-    // // Parallelize the loop for distance calculation
-    // // comment 03.18.2024 nakamichi
-    // // This loop is parallelizable, but the FunctionValue method of the sdf object is not thread-safe,
-    // // requiring the use of #pragma omp critical. This leads to the computation speed being dependent on sdf->FunctionValue(point).
-    // // However, since sdf->FunctionValue(point) is the bottleneck of this loop, it may be necessary to make FunctionValue itself thread-safe
-    // // or parallelize FunctionValue itself.
-    
-    // // Initialize a buffer to hold the values computed by each thread
-    // std::vector<double> threadBuffer(dims[0] * dims[1] * dims[2], 1.0);
-    // double distance;
-    // #pragma omp parallel private(distance)
-    // {   
-    //     #pragma omp for
-    //     for (int k = 0; k < dims[2]; ++k) {
-    //         for (int j = 0; j < dims[1]; ++j) {
-    //             for (int i = 0; i < dims[0]; ++i) {
-    //                 {
-    //                 double point[3];
-    //                 point[0] = origin[0] + i * spacing[0];
-    //                 point[1] = origin[1] + j * spacing[1];
-    //                 point[2] = origin[2] + k * spacing[2];
-    //                 // Signed Distance Fields
-    //                 #pragma omp critical
-    //                 {
-    //                 distance = sdf->FunctionValue(point);
-    //                 }
-    //                 // Normalize distance by thickness and spacing
-    //                 double normalizedDistance = distance / (thickness * spacing[0]);
-    //                 // Apply tanh function to get wall boundary distribution in range [-1, 1]
-    //                 double wallBoundaryFunction = 0.5 * std::tanh(normalizedDistance) + 0.5;
-    //                 // Store the value in the thread-specific buffer
-    //                 threadBuffer[k * dims[0] * dims[1] + j * dims[0] + i] = wallBoundaryFunction;
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
+    return sdfOutput;
+}
 
-    // // Merge the thread buffers into the main porosity array
-    // #pragma omp for
-    // for (int i = 0; i < dims[0] * dims[1] * dims[2]; ++i) {
-    //     porosity->InsertNextValue(threadBuffer[i]);
-    // }
+/**
+ * @brief Calculate the porosity.
+ * 
+ * @param sdf The input array storing the Signed Distance Fields.
+ * @param thickness The thickness parameter for normalization.
+ * @return The output array storing the porosity.
+ */
+vtkSmartPointer<vtkDoubleArray> computePorosity(vtkSmartPointer<vtkDoubleArray> sdf, double thickness) {
+    vtkSmartPointer<vtkDoubleArray> porosity = vtkSmartPointer<vtkDoubleArray>::New();
+    porosity->SetName("porosity");
+
+    int numPoints = sdf->GetNumberOfValues();
+    for (int i = 0; i < numPoints; ++i) {
+        double distance = sdf->GetValue(i);
+        // Normalize SDF by thickness
+        double normalizedDistance = distance / thickness;
+        // Apply tanh function to get wall boundary distribution in range [-1, 1]
+        double wallBoundaryFunction = 0.5 * std::tanh(normalizedDistance) + 0.5;
+        porosity->InsertNextValue(wallBoundaryFunction);
+    }
 
     return porosity;
 }
@@ -249,14 +221,38 @@ void outputDataDetails(vtkImageData* imageData) {
     std::cout << "Origin: " << origin[0] << " " << origin[1] << " " << origin[2] << std::endl;
     std::cout << "Spacing: " << spacing[0] << " " << spacing[1] << " " << spacing[2] << std::endl;
     std::cout << std::endl;
+
+    vtkSmartPointer<vtkPointData> pointData = imageData->GetPointData();
+    int numArrays = pointData->GetNumberOfArrays();
+
+    for (int i = 0; i < numArrays; ++i) {
+        vtkDataArray* dataArray = pointData->GetArray(i);
+        const char* arrayName = dataArray->GetName();
+        int arraySize = dataArray->GetNumberOfTuples();
+        const char* arrayType = (dataArray->GetNumberOfComponents() == 1) ? "Scalar" : "Vector";
+
+        std::cout << "Array Name: " << arrayName << ", Type: " << arrayType << ", Size: " << arraySize << std::endl;
+    }
+
+    std::cout << std::endl;
 }
 
-void writeImageDataToCSV(vtkImageData* imageData, const std::string& outputCsvFileName) {
+void writeImageDataToCSV(vtkImageData* imageData, const std::string& scalarDataName, const std::string& outputCsvFileName) {
     // Write cell dimensions to CSV
     int* dims = imageData->GetDimensions();
     double* spacing = imageData->GetSpacing();
     double* origin = imageData->GetOrigin();
     int* extent = imageData->GetExtent();
+
+    // Get the point data
+    vtkSmartPointer<vtkPointData> pointData = imageData->GetPointData();
+
+    // Get the array with the specified name
+    vtkDataArray* scalarDataArray = pointData->GetArray(scalarDataName.c_str());
+    if (!scalarDataArray) {
+        std::cerr << "Error: Scalar data array with name " << scalarDataName << " not found." << std::endl;
+        return;
+    }
 
     std::ofstream csvFile(outputCsvFileName);
     if (!csvFile.is_open()) {
@@ -264,6 +260,7 @@ void writeImageDataToCSV(vtkImageData* imageData, const std::string& outputCsvFi
         return;
     }
 
+    std::cout << "Get scalar value of " << scalarDataName << std::endl;
     std::cout << "Output to " << outputCsvFileName << "..." << std::flush;
     csvFile << dims[0] << "," << dims[1] << "," << dims[2] << std::endl;
 
@@ -271,12 +268,7 @@ void writeImageDataToCSV(vtkImageData* imageData, const std::string& outputCsvFi
     for (int iz = extent[4]; iz <= extent[5]; ++iz) {
         for (int iy = extent[2]; iy <= extent[3]; ++iy) {
             for (int ix = extent[0]; ix <= extent[1]; ++ix) {
-                double point[3];
-                point[0] = origin[0] + ix * spacing[0];
-                point[1] = origin[1] + iy * spacing[1];
-                point[2] = origin[2] + iz * spacing[2];
-                
-                double scalarValue = imageData->GetScalarComponentAsDouble(ix, iy, iz, 0); // Assuming single component scalar
+                double scalarValue = scalarDataArray->GetComponent(ix+iy*ix+iz*iy*ix, 0);
                 csvFile << ix << "," << iy << "," << iz << "," << scalarValue << std::endl;
             }
         }
@@ -317,16 +309,18 @@ int main() {
     vtkSmartPointer<vtkImageData> imageData = processSTLFile(polyData, boundsFactor, grid, axis);
 
     // **************** calculate porosity **********************
-    // Variable declarations for measuring the execution time of the computePorosity function
-    double startTime, endTime;
     // Set number of threads
     std::cout << "Max threads: " << omp_get_max_threads() << std::endl;
     omp_set_num_threads(numThreads);
     std::cout << "Number of threads set: " << numThreads << std::endl;
     std::cout << "Calculating porosity..." << std::flush;
+    // Variable declarations for measuring the execution time of the computePorosity function
+    double startTime, endTime;
+    double* spacing = imageData->GetSpacing();
     // Start measuring the execution time
     startTime = omp_get_wtime();
-    vtkSmartPointer<vtkDoubleArray> distanceSDF = computePorosity(polyData, imageData, thickness);
+    vtkSmartPointer<vtkDoubleArray> sdf = computeSDF(polyData, imageData);
+    vtkSmartPointer<vtkDoubleArray> porosity = computePorosity(sdf, thickness*spacing[0]);
     // End measuring the execution time
     endTime = omp_get_wtime();
     std::cout << "Completed" << std::endl;
@@ -338,7 +332,8 @@ int main() {
 
     // **************** output porosity **********************
     vtkSmartPointer<vtkPointData> pointData = imageData->GetPointData();
-    pointData->SetScalars(distanceSDF);
+    pointData->AddArray(porosity);
+    pointData->AddArray(sdf);
 
     // Call the function to output data details
     outputDataDetails(imageData);
@@ -351,7 +346,7 @@ int main() {
     }
 
     // Call the function to write image data to CSV
-    writeImageDataToCSV(imageData, outputCsvFileName);
+    writeImageDataToCSV(imageData, "porosity", outputCsvFileName);
 
     // Call the function to write image data to file if outputVtk is true
     if (outputVtk) {
