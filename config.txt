@@ -1,5 +1,5 @@
 # Path to the STL file
-stlFilePath=stl_files/sample/sphere.stl
+stlFilePath=stl_files/sample/dragon.stl
 
 # Path to the output CSV file
 outputCsvFileName=porosity.csv

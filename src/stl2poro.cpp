@@ -157,20 +157,16 @@ vtkSmartPointer<vtkDoubleArray> computeSDF(vtkSmartPointer<vtkPolyData> polyData
     double* spacing = imageData->GetSpacing();
     double* origin = imageData->GetOrigin();
 
-    {
-        for (int k = 0; k < dims[2]; ++k) {
-            for (int j = 0; j < dims[1]; ++j) {
-                for (int i = 0; i < dims[0]; ++i) {
-                    double point[3];
-                    point[0] = origin[0] + i * spacing[0];
-                    point[1] = origin[1] + j * spacing[1];
-                    point[2] = origin[2] + k * spacing[2];
-                    // Signed Distance Fields
-                    {
-                    double distance = sdf->FunctionValue(point);
-                    sdfOutput->InsertNextValue(distance);
-                    }
-                }
+    for (int k = 0; k < dims[2]; ++k) {
+        for (int j = 0; j < dims[1]; ++j) {
+            for (int i = 0; i < dims[0]; ++i) {
+                double point[3];
+                point[0] = origin[0] + i * spacing[0];
+                point[1] = origin[1] + j * spacing[1];
+                point[2] = origin[2] + k * spacing[2];
+                // Signed Distance Fields
+                double distance = sdf->FunctionValue(point);
+                sdfOutput->InsertNextValue(distance);
             }
         }
     }
@@ -200,6 +196,63 @@ vtkSmartPointer<vtkDoubleArray> computePorosity(vtkSmartPointer<vtkDoubleArray> 
     }
 
     return porosity;
+}
+
+/**
+ * @brief Calculate Multi-grayscale Image.
+ * 
+ * @param sdf The input array storing the Signed Distance Fields.
+ * @param delta The thickness parameter for interface.
+ * @return The output array storing the multi-grayscale image.
+ */
+vtkSmartPointer<vtkDoubleArray> computeMultigrayscale(vtkSmartPointer<vtkDoubleArray> sdf, double delta) {
+    vtkSmartPointer<vtkDoubleArray> multiImage = vtkSmartPointer<vtkDoubleArray>::New();
+    multiImage->SetName("multiGrayscale");
+
+    if (!(delta > 0 && delta <= 1)) {
+        std::cout << "Error: In function computeMultigrayscale, delta must satisfy 0 < delta <= 1." << std::endl;
+        return 0;
+    }
+
+    int numPoints = sdf->GetNumberOfValues();
+    for (int i = 0; i < numPoints; ++i) {
+        double distance = sdf->GetValue(i);
+        double normalizedDistance;
+        // Normalize SDF and calculate binary
+        if (std::abs(distance) <= delta ) {
+            normalizedDistance = 0.5*(1 + distance/2);
+        }
+        else if (distance < 0) {
+            normalizedDistance = 0.0;
+        }
+        else {
+            normalizedDistance = 1.0;
+        }
+        multiImage->InsertNextValue(normalizedDistance);
+    }
+
+    return multiImage;
+}
+
+/**
+ * @brief Calculate Binary Image.
+ * 
+ * @param sdf The input array storing the Signed Distance Fields.
+ * @return The output array storing the binary image.
+ */
+vtkSmartPointer<vtkDoubleArray> computeBinary(vtkSmartPointer<vtkDoubleArray> sdf) {
+    vtkSmartPointer<vtkDoubleArray> binaryImage = vtkSmartPointer<vtkDoubleArray>::New();
+    binaryImage->SetName("binary");
+
+    int numPoints = sdf->GetNumberOfValues();
+    for (int i = 0; i < numPoints; ++i) {
+        double distance = sdf->GetValue(i);
+        // Normalize SDF and calculate binary
+        int normalizedDistance = std::round(0.49 + 0.5*distance/(std::abs(distance)+FLT_MIN));
+        binaryImage->InsertNextValue(normalizedDistance);
+    }
+
+    return binaryImage;
 }
 
 void outputDataDetails(vtkImageData* imageData) {
@@ -308,32 +361,46 @@ int main() {
     vtkSmartPointer<vtkPolyData> polyData = reader->GetOutput();
     vtkSmartPointer<vtkImageData> imageData = processSTLFile(polyData, boundsFactor, grid, axis);
 
-    // **************** calculate porosity **********************
+    // **************** calculate **********************
     // Set number of threads
     std::cout << "Max threads: " << omp_get_max_threads() << std::endl;
     omp_set_num_threads(numThreads);
     std::cout << "Number of threads set: " << numThreads << std::endl;
-    std::cout << "Calculating porosity..." << std::flush;
+    std::cout << "Calculating ..." << std::flush;
     // Variable declarations for measuring the execution time of the computePorosity function
-    double startTime, endTime;
+    double startTime, t1, t2, t3, endTime;
     double* spacing = imageData->GetSpacing();
     // Start measuring the execution time
     startTime = omp_get_wtime();
     vtkSmartPointer<vtkDoubleArray> sdf = computeSDF(polyData, imageData);
+    t1 = omp_get_wtime();
     vtkSmartPointer<vtkDoubleArray> porosity = computePorosity(sdf, thickness*spacing[0]);
+    t2 = omp_get_wtime();
+    vtkSmartPointer<vtkDoubleArray> multiGrayscale = computeMultigrayscale(sdf, 1.0*spacing[0]);
+    t3 = omp_get_wtime();
+    vtkSmartPointer<vtkDoubleArray> binary = computeBinary(sdf);
     // End measuring the execution time
     endTime = omp_get_wtime();
     std::cout << "Completed" << std::endl;
     // Calculate the elapsed time in seconds
-    double elapsedTime = endTime - startTime;
+    double elapsedTimeSDF = t1 - startTime;
+    double elapsedTimePorosity = t2 - t1;
+    double elapsedTimeMultigrayscale = t3 - t2;
+    double elapsedTimeBinary = endTime - t3;
+    double totalElapsedTime = endTime - startTime;
     // Output the computation time
-    std::cout << "computePorosity function took " << elapsedTime << " seconds." << std::endl;
-    // **************** calculate porosity end **********************
+    std::cout << "computeSDF function took " << elapsedTimeSDF << " seconds." << std::endl;
+    std::cout << "computePorosity function took " << elapsedTimePorosity << " seconds." << std::endl;
+    std::cout << "computeMultigrayscale function took " << elapsedTimeMultigrayscale << " seconds." << std::endl;
+    std::cout << "computeBinary function took " << elapsedTimeBinary << " seconds." << std::endl;
+    std::cout << "Total computation time: " << totalElapsedTime << " seconds." << std::endl;
+    // **************** calculate end **********************
 
-    // **************** output porosity **********************
     vtkSmartPointer<vtkPointData> pointData = imageData->GetPointData();
     pointData->AddArray(porosity);
     pointData->AddArray(sdf);
+    pointData->AddArray(multiGrayscale);
+    pointData->AddArray(binary);
 
     // Call the function to output data details
     outputDataDetails(imageData);
